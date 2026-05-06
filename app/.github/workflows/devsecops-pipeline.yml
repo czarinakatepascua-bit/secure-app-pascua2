@@ -1,0 +1,69 @@
+name: DevSecOps CI Pipeline
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+
+  scan:
+    name: Security Scanning (SAST + Dependency + Secrets)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Semgrep
+        run: pip install semgrep
+
+      - name: Run SAST (Semgrep)
+        run: semgrep --config=.semgrep.yml --json > semgrep-report.json
+
+      - name: Dependency Scan (pip audit)
+        run: |
+          pip install pip-audit
+          pip-audit -r requirements.txt -f json > dependency-report.json
+
+      - name: Secret Scan (gitleaks)
+        run: |
+          docker run --rm -v "$PWD:/repo" zricethezav/gitleaks:latest detect --source=/repo -f json > secrets-report.json
+
+      - name: Upload scan artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-reports
+          path: |
+            semgrep-report.json
+            dependency-report.json
+            secrets-report.json
+
+  build:
+    name: Build & SBOM Generation
+    runs-on: ubuntu-latest
+    needs: scan
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Build Docker Image
+        run: |
+          docker build -t secure-app:${{ github.sha }} .
+
+      - name: Generate SBOM (Syft)
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh
+          ./syft secure-app:${{ github.sha }} -o cyclonedx-json > sbom.json
+
+      - name: Save image metadata
+        run: |
+          echo "secure-app:${{ github.sha }}" > image.txt
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-artifacts
+          path: |
+            sbom.json
+            image.txt
